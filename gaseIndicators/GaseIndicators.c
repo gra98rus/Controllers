@@ -18,7 +18,7 @@
 #define BUTTONREG PORTC
 #define BUTTONPIN PINC
 #define BUTTON1_PIN 0
-#define BUTTON2_PIN 1
+#define BUTTON2_PIN 2
 
 #define POINT_REG PORTB
 #define POINT1_PIN 4
@@ -38,6 +38,7 @@ volatile uint16_t year = 2019;
 volatile uint8_t dayOfWen = 3;
 volatile uint8_t temperature = 0;
 
+volatile uint8_t startStopwatch = 0;
 volatile uint8_t stopwatchMSec = 0;
 volatile uint8_t stopwatchSec = 0;
 volatile uint8_t stopwatchMin = 0;
@@ -50,7 +51,9 @@ volatile uint8_t mode = 0;   //0 - time, 1 - date, 2 - dayOfWen-temperature, 3 -
 volatile uint8_t setting = 0;
 volatile uint8_t settingMode = 0; //0 - sec, 1 - min; 2 - h, 3 - year, 4 - mounth, 5 - day, 6 - dayOfWen
 volatile int command = 0;  //h - hours, m - min, s - sec, y - year, M - mounth, d - day, t - mode, w - dayOfWen
-volatile uint8_t startStopwatch = 0;
+
+volatile uint8_t settingStrob = 0;
+volatile uint8_t strobDelay = 0;
 
 volatile uint8_t uartBuf[SIZE_BUF];
 volatile uint8_t bufTail = 0;
@@ -108,6 +111,21 @@ void ds3231_write_time(uint8_t hour, uint8_t min, uint8_t sec){
 	i2cStop();
 }
 
+void ds3231_write_hour(uint8_t hour){
+	i2cStart();
+	i2cSend(0xD0);
+	i2cSend(0x00);
+	i2cSend(ds3231_byte(hour));
+	i2cStop();
+}
+void ds3231_write_mins(uint8_t min){
+	i2cStart();
+	i2cSend(0xD0);
+	i2cSend(0x00);
+	i2cSend(ds3231_byte(min));
+	i2cStop();
+}
+
 void ds3231_write_date(uint8_t year, uint8_t month, uint8_t date, uint8_t day){
 	i2cStart();
 	i2cSend(0xD0);
@@ -159,7 +177,7 @@ void ds3231_read_date(){
 	year = ((temp[3] & 0x0F)+(((temp[3] >> 4) & 0x07) * 10));
 }
 
-void ds3231_read_temp(){
+void ds3231_read_temp(){	
 	i2cStart();
 	i2cSend(0xD0);
 	i2cSend(0x11);
@@ -238,13 +256,32 @@ uint8_t getPrintedThreeOfTwo(uint8_t value1, uint8_t value2, uint8_t value3){
 	return temp;
 }
 
+ISR(TIMER0_OVF_vect){
+		cli();
+		
+ 		if (!settingStrob) settingStrob = ~settingStrob;
+		else if (strobDelay > 1){
+			settingStrob = ~settingStrob;
+			strobDelay = 0;
+		}
+		else strobDelay++;
+//  		if (strobDelay == 10){
+//  			 settingStrob = ~settingStrob;
+//  			 strobDelay = 0;
+//  		}
+//  		else strobDelay++;
+		
+		sei();
+		return;
+}
+
 ISR(TIMER2_OVF_vect){
 	cli();
 
 	ONOFFREG &= 0b00000011;
 	NUMREG &= 0b11000000;
 	if(currentLed < 6)
-		if ((setting) && (seconds % 2)){
+		if ((setting) && (settingStrob)){
 			if(((settingMode == 0) || (settingMode == 3)) && ((currentLed == 0) || (currentLed == 1))) ONOFFREG |= (1<<currentLed+2);
 			else if(((settingMode == 1) || (settingMode == 4) || (settingMode == 6)) && ((currentLed == 2) || (currentLed == 3))) ONOFFREG |= (1<<currentLed+2);
 			else if(((settingMode == 2) || (settingMode == 5)) && ((currentLed == 4) || (currentLed == 5))) ONOFFREG |= (1<<currentLed+2);
@@ -303,8 +340,8 @@ ISR(TIMER1_OVF_vect){
 			}
 		}
 	}
-		
-	TCNT1 = 46145;  //46140-46150
+	if((mode == 3) || (startStopwatch))   TCNT1 = 46145;  //46140-46150
+	else TCNT1 = 0;
 		
 	sei();
 	return;
@@ -314,12 +351,12 @@ ISR(TIMER1_OVF_vect){
 ISR( USART_RX_vect ){
 	cli();
 	int temp = UDR0;
-	if (bufCount < SIZE_BUF){
-		 uartBuf[bufTail] = temp;
-		 bufCount++;
-		 bufTail++;
+	if (bufCount < SIZE_BUF){                   
+		 uartBuf[bufTail] = temp;        
+		 bufCount++;                             
+		 bufTail++;  
 		 if (bufTail == SIZE_BUF) bufTail = 0;
-	}
+	}                                  
 	sei();
 	return;
 }
@@ -363,12 +400,52 @@ void incSettingMode(){
 	else if (settingMode == 6) mode = 2;
 }
 
+void incTime(){
+		if(settingMode == 0){
+			if(seconds != 59) ds3231_write_time(hours, mins, seconds + 1);
+			else ds3231_write_time(hours, mins, 0);
+		}
+		else if(settingMode == 1){
+			if(mins != 59) ds3231_write_time(hours, mins + 1, seconds);
+			else ds3231_write_time(hours, 0, seconds);
+		}
+		else if(settingMode == 2) {
+			if(hours != 23) ds3231_write_time(hours + 1, mins, seconds);
+			else ds3231_write_time(0, mins, hours);
+		}
+		else if(settingMode == 3){
+			if(year != 99) ds3231_write_date(year + 1, mounth, day, dayOfWen);
+			else ds3231_write_date(0, mounth, day, dayOfWen);
+		}
+		else if(settingMode == 4){
+			if(mounth != 12) ds3231_write_date(year, mounth + 1, day, dayOfWen);
+			else ds3231_write_date(year, 1, day, dayOfWen);
+		}
+		else if(settingMode == 5){
+			 if(((mounth == 1) || (mounth == 3) || (mounth == 5) || (mounth == 7) || (mounth == 8) || (mounth == 10) || (mounth == 12)) && (day == 31))
+				ds3231_write_date(year, mounth, 1, dayOfWen);
+			else if (((mounth == 4) || (mounth == 6) || (mounth == 9) || (mounth == 11)) && (day == 30))
+				ds3231_write_date(year, mounth, 1, dayOfWen);
+			else if ((mounth == 2) && (year % 4 == 0) && (day == 29))
+				ds3231_write_date(year, mounth, 1, dayOfWen);
+			else if ((mounth == 2) && (year % 4 != 0) && (day == 28))
+				ds3231_write_date(year, mounth, 1, dayOfWen);
+			else ds3231_write_date(year, mounth, day + 1, dayOfWen);
+
+		}
+		else if(settingMode == 6){
+			if(dayOfWen != 7) ds3231_write_date(year, mounth, day, dayOfWen + 1);
+			else ds3231_write_date(year, mounth, day, 1);
+		}
+}
+
 int main(void)
 {
 	uint16_t longClickCount = 0;
 	int temp = 0;
-
+	
 	uint32_t resetModeCount = 0;
+	uint32_t resetSettingCount = 0;
 	
 	DDRD = 255;
 	PORTD = 0;
@@ -376,9 +453,11 @@ int main(void)
 	DDRB = 0b00111111;
 	PORTB = 0;
 	
-	DDRC &= 0b11111100;
+	DDRC &= 0b11110000;
 	
-	
+	TCCR0B = 3 << CS00;
+	TIMSK0 = 1 << TOIE0;
+		
 	TCCR1B = 2 << CS10;
 	TIMSK1 = 1 << TOIE1;
 	
@@ -399,19 +478,23 @@ int main(void)
 		if (mode != 0) resetModeCount++;
 		if (resetModeCount == 8000000) {
 			mode = 0;
-			setting = 0;
-			settingMode = 0;
 			resetModeCount = 0;
 		}
 		if(BUTTONPIN & (1<<BUTTON1_PIN)){
 			resetModeCount = 0;
+			incMode();
+			while(BUTTONPIN & (1<<BUTTON1_PIN)){}
+			_delay_ms(100);
+		}
+		
+		if(BUTTONPIN & (1<<BUTTON2_PIN)){
+			resetModeCount = 0;
 			if(mode == 3){
-				while(BUTTONPIN & (1<<BUTTON1_PIN)){
+				startStopwatch = ~startStopwatch;
+				while(BUTTONPIN & (1<<BUTTON2_PIN)){
 					_delay_ms(200);
 					longClickCount++;
-					if(longClickCount == 100)
-						startStopwatch = ~startStopwatch;
-					else if(longClickCount > 200){
+					if(longClickCount > 200){
 						startStopwatch = 0;
 						stopwatchMin = 0;
 						stopwatchSec = 0;
@@ -420,43 +503,34 @@ int main(void)
 						stopwatchMode = 0;
 					}
 				}
-				if(longClickCount < 100)
-					incMode();
+				longClickCount = 0;
 			}
 			else{
-				incMode();
-				while(BUTTONPIN & (1<<BUTTON1_PIN)){}
+				setting = 1;
+				mode = 0;
+				while(BUTTONPIN & (1<<BUTTON2_PIN)){}
 				_delay_ms(100);
-			}
-			longClickCount = 0;
-		}
-		
-		if(BUTTONPIN & (1<<BUTTON2_PIN)){
-			resetModeCount = 0;
-			setting = 1;
-			mode = 0;
-			while(BUTTONPIN & (1<<BUTTON2_PIN)){}
-			_delay_ms(100);
-			while(1){
-				if(BUTTONPIN & (1<<BUTTON2_PIN)){
-					resetModeCount = 0;
-					incSettingMode();
-					while(BUTTONPIN & (1<<BUTTON2_PIN)){}
-					_delay_ms(100);
+				while(1){
+					if(BUTTONPIN & (1<<BUTTON2_PIN)){
+						resetSettingCount = 0;
+						incSettingMode();
+						while(BUTTONPIN & (1<<BUTTON2_PIN)){}
+						_delay_ms(100);
+					}
+					if(BUTTONPIN & (1<<BUTTON1_PIN)){
+						resetSettingCount = 0;
+						incTime();
+						while(BUTTONPIN & (1<<BUTTON1_PIN)){}
+						_delay_ms(100);
+					}
+					resetSettingCount++;
+					if (resetSettingCount == 5000000){
+						resetSettingCount = 0;
+						setting = 0;
+						settingMode = 0;
+						break;
+					} 
 				}
-				if(BUTTONPIN & (1<<BUTTON1_PIN)){
-					resetModeCount = 0;
-					if (settingMode == 0)  ds3231_write_time(hours, mins, seconds + 1);
-					else if (settingMode == 1)  ds3231_write_time(hours, mins + 1, seconds);
-					else if (settingMode == 2)  ds3231_write_time(hours + 1, mins, seconds);
-					else if (settingMode == 3)  ds3231_write_date(year + 1, mounth, day, dayOfWen);
-					else if (settingMode == 4)  ds3231_write_date(year, mounth + 1, day, dayOfWen);
-					else if (settingMode == 5)  ds3231_write_date(year, mounth, day + 1, dayOfWen);
-					else if (settingMode == 6)  ds3231_write_date(year, mounth, day, dayOfWen + 1);
-					while(BUTTONPIN & (1<<BUTTON1_PIN)){}
-					_delay_ms(100);
-				}
-
 			}
 		}
 		
@@ -480,8 +554,8 @@ int main(void)
 		else if(command == 'm') ds3231_write_time(hours, temp, seconds);// mins = temp;
 		else if(command == 'w') ds3231_write_date(year, mounth, day, temp);//dayOfWen = temp;
 		else if(command == 'y') ds3231_write_date(temp, mounth, day, dayOfWen);//year = temp;
-		else if(command == 'M') ds3231_write_date(year%100, temp, day, dayOfWen);// mounth = temp;
-		else if(command == 'd') ds3231_write_date(year%100, mounth, temp, dayOfWen);//day = temp;
+		else if(command == 'M') ds3231_write_date(year, temp, day, dayOfWen);// mounth = temp;
+		else if(command == 'd') ds3231_write_date(year, mounth, temp, dayOfWen);//day = temp;
 		else if(command == 't') mode = temp;
 		command = 0;
 		temp = 0;
