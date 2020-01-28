@@ -24,6 +24,9 @@
 #define POINT1_PIN 4
 #define POINT2_PIN 5
 
+#define SUMMER_REG PORTC
+#define SUMMER_PIN 3
+
 #define SIZE_BUF 16
 
 volatile uint8_t hours = 18;
@@ -34,6 +37,7 @@ volatile uint8_t day = 11;
 volatile uint8_t mounth = 12;
 volatile uint16_t year = 2019;
 
+volatile uint8_t isAlarm = 0;
 
 volatile uint8_t dayOfWen = 3;
 volatile uint8_t temperature = 0;
@@ -45,9 +49,15 @@ volatile uint8_t stopwatchMin = 0;
 volatile uint8_t stopwatchHour = 0;
 volatile uint8_t stopwatchMode = 0;  //0 - min-sec-msec; 1- hour-min-sec
 
+volatile int settingAlarmMode = -1;
+volatile uint8_t alarmOnOff = 0;
+volatile int alarmSec = -1;
+volatile int alarmMin = -1;
+volatile int alarmHour = -1;
+
 volatile uint8_t currentLed = 0;
 
-volatile uint8_t mode = 0;   //0 - time, 1 - date, 2 - dayOfWen-temperature, 3 - stopwatch
+volatile uint8_t mode = 0;   //0 - time, 1 - date, 2 - dayOfWen-temperature, 3 - stopwatch, 4 - alarm
 volatile uint8_t setting = 0;
 volatile uint8_t settingMode = 0; //0 - sec, 1 - min; 2 - h, 3 - year, 4 - mounth, 5 - day, 6 - dayOfWen
 volatile int command = 0;  //h - hours, m - min, s - sec, y - year, M - mounth, d - day, t - mode, w - dayOfWen
@@ -233,20 +243,32 @@ uint8_t getPrintedTwoOfTwo(uint8_t value1, uint8_t value2){
 	return temp;
 }
 
-uint8_t getPrintedThreeOfTwo(uint8_t value1, uint8_t value2, uint8_t value3){
+uint8_t getPrintedThreeOfTwo(int value1, int value2, int value3){
 	uint8_t temp = 0;
-	if(currentLed == 0)
-		temp = value3 % 10;
-	else if(currentLed == 1)
-		temp = value3 / 10;
-	else if(currentLed == 2)
-		temp = value2 % 10;
-	else if(currentLed == 3)
-		temp = value2 / 10;
-	else if(currentLed == 4)
-		temp = value1 % 10;
-	else if(currentLed == 5)
-		temp = value1 / 10;
+	if(currentLed == 0){
+		if (value3 == -1) ONOFFREG &= (0<<currentLed+2);
+		else temp = value3 % 10;
+	}
+	else if(currentLed == 1){
+		if (value3 == -1) ONOFFREG &= (0<<currentLed+2);
+		else temp = value3 / 10;
+	}
+	else if(currentLed == 2){
+		if (value2 == -1) ONOFFREG &= (0<<currentLed+2);
+		else temp = value2 % 10;
+	}
+	else if(currentLed == 3){
+		if (value2 == -1) ONOFFREG &= (0<<currentLed+2);
+		else temp = value2 / 10;
+	}
+	else if(currentLed == 4){
+		if (value1 == -1) ONOFFREG &= (0<<currentLed+2);
+		else temp = value1 % 10;
+	}
+	else if(currentLed == 5){
+		if (value1 == -1) ONOFFREG &= (0<<currentLed+2);
+		else temp = value1 / 10;
+	}
 
 	else if(currentLed == 6)
 		onOffPoint(0, 1);
@@ -265,11 +287,6 @@ ISR(TIMER0_OVF_vect){
 			strobDelay = 0;
 		}
 		else strobDelay++;
-//  		if (strobDelay == 10){
-//  			 settingStrob = ~settingStrob;
-//  			 strobDelay = 0;
-//  		}
-//  		else strobDelay++;
 		
 		sei();
 		return;
@@ -286,6 +303,13 @@ ISR(TIMER2_OVF_vect){
 			else if(((settingMode == 1) || (settingMode == 4) || (settingMode == 6)) && ((currentLed == 2) || (currentLed == 3))) ONOFFREG |= (1<<currentLed+2);
 			else if(((settingMode == 2) || (settingMode == 5)) && ((currentLed == 4) || (currentLed == 5))) ONOFFREG |= (1<<currentLed+2);
 		}
+		else if((mode == 4) && (settingAlarmMode != -1) && (settingStrob)){
+			if((settingAlarmMode == 0) && ((currentLed == 0) || (currentLed == 1))) ONOFFREG |= (1<<currentLed+2);
+			if((settingAlarmMode == 1) && ((currentLed == 2) || (currentLed == 3))) ONOFFREG |= (1<<currentLed+2);
+			if((settingAlarmMode == 2) && ((currentLed == 4) || (currentLed == 5))) ONOFFREG |= (1<<currentLed+2);
+		}
+		else if((mode == 4) && (!alarmOnOff) && (settingStrob))
+			ONOFFREG &= ~(1<<currentLed+2);
 		else ONOFFREG |= (1<<currentLed+2);
 	if	   (mode == 0)	NUMREG |= getPrintedThreeOfTwo(hours, mins, seconds);
 	else if(mode == 1)	NUMREG |= getPrintedThreeOfTwo(day, mounth, year);
@@ -296,6 +320,7 @@ ISR(TIMER2_OVF_vect){
 		else
 			NUMREG |= getPrintedThreeOfTwo(stopwatchMin, stopwatchSec, stopwatchMSec);
 	}
+	else if(mode == 4) NUMREG |= getPrintedThreeOfTwo(alarmHour, alarmMin, alarmSec);
 
 	currentLed++;
 	if(currentLed == 8)
@@ -340,6 +365,8 @@ ISR(TIMER1_OVF_vect){
 			}
 		}
 	}
+	if ((alarmOnOff) && (hours == alarmHour) && (mins == alarmMin) && (seconds == alarmSec))
+		isAlarm = 1;
 	if((mode == 3) || (startStopwatch))   TCNT1 = 46145;  //46140-46150
 	else TCNT1 = 0;
 		
@@ -387,13 +414,13 @@ void uartSendStr(char str[]){
 }
 
 void incMode(){
-	if(mode != 3)
+	if(mode != 4)
 		mode++;
 	else mode = 0;
 }
 
 void incSettingMode(){
-	if(settingMode == 7) settingMode = 0;
+	if(settingMode == 6) settingMode = 0;
 	else settingMode++;
 	if(settingMode < 3) mode = 0;
 	else if (settingMode < 6) mode = 1;
@@ -439,6 +466,46 @@ void incTime(){
 		}
 }
 
+void incAlarm(){
+	if(settingAlarmMode == 0){
+		if(alarmSec == 59) alarmSec = 0;
+		else alarmSec++;
+	}
+	else if(settingAlarmMode == 1){
+		if(alarmMin == 59) alarmMin = 0;
+		else alarmMin++;
+	}
+	else if(settingAlarmMode == 2) {
+		if(alarmHour == 23) alarmHour = 0;
+		else alarmHour++;
+	}
+}
+
+void beep(){
+	SUMMER_REG |= (1<<SUMMER_PIN);
+	_delay_ms(1);
+	SUMMER_REG &= ~(1<<SUMMER_PIN);
+}
+
+void alarm(){
+	while(isAlarm){
+		SUMMER_REG |= (1<<SUMMER_PIN);
+		_delay_ms(700);
+		SUMMER_REG &= ~(1<<SUMMER_PIN);
+		_delay_ms(1000);
+		SUMMER_REG |= (1<<SUMMER_PIN);
+		_delay_ms(700);
+		SUMMER_REG &= ~(1<<SUMMER_PIN);
+		_delay_ms(5000);
+		if((BUTTONPIN & (1<<BUTTON1_PIN)) || (BUTTONPIN & (1<<BUTTON2_PIN))){
+			isAlarm = 0;
+			while(BUTTONPIN & (1<<BUTTON1_PIN)){}
+			while(BUTTONPIN & (1<<BUTTON2_PIN)){}
+			_delay_ms(500);
+		}
+	}
+}
+
 int main(void)
 {
 	uint16_t longClickCount = 0;
@@ -447,13 +514,15 @@ int main(void)
 	uint32_t resetModeCount = 0;
 	uint32_t resetSettingCount = 0;
 	
+	uint32_t resetAlarmCount = 0;
+	
 	DDRD = 255;
 	PORTD = 0;
 	
 	DDRB = 0b00111111;
 	PORTB = 0;
 	
-	DDRC &= 0b11110000;
+	DDRC = 0b11111000;
 	
 	TCCR0B = 3 << CS00;
 	TIMSK0 = 1 << TOIE0;
@@ -472,24 +541,26 @@ int main(void)
 	//ds3231_write_date(19, 12, 11, 3);
 	
 	sei();
-	
     while (1) 
-    {  
+    {
+		alarm();
 		if (mode != 0) resetModeCount++;
 		if (resetModeCount == 8000000) {
 			mode = 0;
 			resetModeCount = 0;
 		}
-		if(BUTTONPIN & (1<<BUTTON1_PIN)){
+		if(BUTTONPIN & (1<<BUTTON1_PIN)){   
 			resetModeCount = 0;
-			incMode();
+			beep();
+			incMode();			//   inc mode
 			while(BUTTONPIN & (1<<BUTTON1_PIN)){}
 			_delay_ms(100);
 		}
 		
 		if(BUTTONPIN & (1<<BUTTON2_PIN)){
+			beep();
 			resetModeCount = 0;
-			if(mode == 3){
+			if(mode == 3){			//   start/stop stopwatch
 				startStopwatch = ~startStopwatch;
 				while(BUTTONPIN & (1<<BUTTON2_PIN)){
 					_delay_ms(200);
@@ -505,23 +576,68 @@ int main(void)
 				}
 				longClickCount = 0;
 			}
-			else{
-				setting = 1;
+			else if(mode == 4){			//   setting alarm
+				if((alarmHour == -1) || (alarmMin == -1) || (alarmSec == -1)){
+					alarmHour = 0;
+					alarmMin = 0;
+					alarmSec = 0;
+				}
+				while(BUTTONPIN & (1<<BUTTON2_PIN))  longClickCount++;
+					
+				if(longClickCount > 5000){
+					alarmOnOff = 1;
+					longClickCount = 0;
+					_delay_ms(500);
+					beep();
+				}
+				else{
+					while(1){
+						if(BUTTONPIN & (1<<BUTTON2_PIN)){
+							beep();
+							resetAlarmCount = 0;
+							if (settingAlarmMode == 2) settingAlarmMode = 0;
+							else settingAlarmMode++;
+							while(BUTTONPIN & (1<<BUTTON2_PIN)){}
+							_delay_ms(500);
+						}
+						if(BUTTONPIN & (1<<BUTTON1_PIN)){
+							beep();
+							resetAlarmCount = 0;
+							incAlarm();
+							while(BUTTONPIN & (1<<BUTTON1_PIN)){}
+							_delay_ms(200);
+						}
+						resetAlarmCount++;
+						if (resetAlarmCount == 5000000){
+							resetAlarmCount = 0;
+							setting = 0;
+							settingMode = 0;
+							settingAlarmMode = -1;
+							
+							break;
+						}
+					}
+				}
+			}
+			else{			//    Setting time mode
+			setting = 1;
 				mode = 0;
 				while(BUTTONPIN & (1<<BUTTON2_PIN)){}
-				_delay_ms(100);
+				_delay_ms(500);
 				while(1){
 					if(BUTTONPIN & (1<<BUTTON2_PIN)){
+						beep();
 						resetSettingCount = 0;
 						incSettingMode();
 						while(BUTTONPIN & (1<<BUTTON2_PIN)){}
-						_delay_ms(100);
+						_delay_ms(500);
 					}
 					if(BUTTONPIN & (1<<BUTTON1_PIN)){
+						beep();
 						resetSettingCount = 0;
 						incTime();
 						while(BUTTONPIN & (1<<BUTTON1_PIN)){}
-						_delay_ms(100);
+						_delay_ms(200);
 					}
 					resetSettingCount++;
 					if (resetSettingCount == 5000000){
@@ -529,12 +645,13 @@ int main(void)
 						setting = 0;
 						settingMode = 0;
 						break;
-					} 
+						 
+					}
 				}
 			}
 		}
-		
-		if(bufCount > 0){
+
+		if(bufCount > 0){ // uart processing
 			command = uartBuf[bufHead];
 			bufCount--;
 			bufHead++;
